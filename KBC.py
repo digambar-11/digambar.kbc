@@ -40,19 +40,19 @@ questions = [
 def key_val():
     total_money = 0
     count = 1
-    
+
     clear()
     print("\n" + "="*40)
-    print("      Welcome to KBC      ")
+    print("           Welcome to KBC           ")
     print("="*40)
     print("\n**Point to be noted**.\n1.There are total 10 questions.\n2.Each question has 4 options to choose.\n3.You will earn INR 1000 on each question if you answered correctly.\n4.If you give a wrong answer, you must quit the game and leave with the amount you have won.\n...Best of Luck...")
     input("\nPress Enter to Start the Game...")
 
     for q in questions:
         clear() 
-        print("*" * 40)
-        print(f" QUESTION {count} | PRIZE: INR {total_money} ")
-        print("*" * 40)
+        print("*" * 45)
+        print(f"   QUESTION {count} | Winning Amount : INR {total_money} ")
+        print("*" * 45)
 
         if count == 4:
            print("\nYou are doing Great!!!")
@@ -70,8 +70,7 @@ def key_val():
             total_money += 1000
             count += 1
             print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
-            time.sleep(2) 
-
+            time.sleep(1) 
         elif ans == "Q":
             confirm = input(f"Are you sure want to quit? You have {total_money} INR till now\nPress \"Y\" to quit or \"N\" to continue : ").upper()
             if confirm == "Y":
@@ -80,15 +79,21 @@ def key_val():
                 else:
                     print(f"Congratulation!! You won {total_money} INR.")
                 break 
-            
+
         elif ans == "H":
             print("\n💡 Hint : ", q["Hint"])
             make_sure = input("Your Answer Please : ").upper()
             if make_sure == q["A"]:
-                total_money += 1000
-                count += 1
                 print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
                 time.sleep(2)
+            elif make_sure == "Q":
+                confirm = input(f"Are you sure want to quit? You have {total_money} INR till now\nPress \"Y\" to quit or \"N\" to continue : ").upper()
+                if confirm == "Y":
+                  if count == 1:
+                    print("Oops!! You lost, Better Luck Next time!")
+                  else:
+                    print(f"Congratulation!! You won {total_money} INR.")
+                  break 
             else:
                 print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
                 return
@@ -105,4 +110,3 @@ def key_val():
         print("*"*40)
 
 key_val()
-
