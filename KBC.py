@@ -1,3 +1,10 @@
+import os
+import time
+
+def clear():
+    # Clears the screen for Windows or Mac/Linux
+    os.system('cls' if os.name == 'nt' else 'clear')
+
 questions = [
     {"Q": "Who is known as the 'Father of the Nation' in India?",
         "O1": "A) Jawaharlal Nehru","O2": "B) Mahatma Gandhi", "O3": "C) Subhash Chandra Bose", "O4": "D) Sardar Patel",
@@ -29,19 +36,28 @@ questions = [
     {"Q": "Who was the Chairman of the Drafting Committee of the Indian Constitution?",
         "O1": "A) Mahatma Gandhi","O2": "B) Dr. B.R. Ambedkar","O3": "C) Sardar Patel","O4": "D) Dr. S. Radhakrishnan",
         "A": "B", "Hint": "He is also known as the \"Father of the Indian Constitution.\""}
-        ]
-
-# l = len(questions)
-# print(l)
-
-print("\n------Welcome to KBC------")
-
-print("\n**Point to be noted**.\n1.There are total 10 questions.\n2.Each question has 4 options to choose.\n3.You will earn INR 1000 on each question if you answered correctly.\n4.If you give a wrong answer, you must quit the game and leave with the amount you have won.\n...Best of Luck...")
+]
 
 def key_val():
     total_money = 0
     count = 1
+
+    # Show the Intro screen first
+    clear()
+    print("\n" + "="*40)
+    print("      Welcome to KBC      ")
+    print("="*40)
+    print("\n**Point to be noted**.\n1.There are total 10 questions.\n2.Each question has 4 options to choose.\n3.You will earn INR 1000 on each question if you answered correctly.\n4.If you give a wrong answer, you must quit the game and leave with the amount you have won.\n...Best of Luck...")
+    input("\nPress Enter to Start the Game...")
+
     for q in questions:
+        clear() # Wipes the screen for every new question
+        
+        # Header for each question
+        print("*" * 40)
+        print(f" QUESTION {count} | PRIZE: INR {total_money} ")
+        print("*" * 40)
+
         if count == 4:
            print("\nYou are doing Great!!!")
         if count == 6:
@@ -52,41 +68,46 @@ def key_val():
         print(f"\n{q['Q']}")
         print("\n".join([q['O1'], q['O2'], q['O3'], q['O4']])) 
         
-        ans = input("\nYour Answer(For Hint press \"H\"or to Quit press \"Q\") : ").upper()
+        ans = input("\nYour Answer(For Hint press \"H\" or to Quit press \"Q\") : ").upper()
+        
         if ans == q["A"]:
-          total_money += 1000
-          count += 1
-          print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
+            total_money += 1000
+            count += 1
+            print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
+            time.sleep(2) # Pause so they can read the success message
 
-        if ans == "Q":
-            confirm = input(f"Are you sure want to quit ? You have {total_money} INR till now\nPress \"Y\" to quit or \"N\" to continue : ").upper()
+        elif ans == "Q":
+            confirm = input(f"Are you sure want to quit? You have {total_money} INR till now\nPress \"Y\" to quit or \"N\" to continue : ").upper()
             if confirm == "Y":
-              if count == 1:
-                print("Oops!! You lost, Better Luck Next time!")
+                if count == 1:
+                    print("Oops!! You lost, Better Luck Next time!")
+                else:
+                    print(f"Congratulation!! You won {total_money} INR.")
                 break 
-              else:
-                print(f"Congratulation!!You won {total_money} INR.")
-                break
-       
+            # If they chose N, this loop will restart with the same question because we didn't increment count
+
         elif ans == "H":
-            print("Hint : ", q["Hint"])
+            print("\n💡 Hint : ", q["Hint"])
             make_sure = input("Your Answer Please : ").upper()
             if make_sure == q["A"]:
-             total_money += 1000
-             count += 1
-             print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
+                total_money += 1000
+                count += 1
+                print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
+                time.sleep(2)
             else:
-              print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
-              return
-        #   next == input("\nYou want to play more ? : ")
-        #   if next == "y":
-        #      print("Here is hte next question")
-           
-    else:
-     print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
-     return
+                print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
+                return
         
+        else:
+            print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
+            return
+
+    # Final Win Message
+    if count > len(questions):
+        clear()
+        print("\n" + "*"*40)
+        print("    UNBELIEVABLE! YOU ARE A WINNER!    ")
+        print(f"      TOTAL PRIZE: INR {total_money}      ")
+        print("*"*40)
 
 key_val()
-
-
