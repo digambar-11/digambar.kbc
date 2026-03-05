@@ -76,16 +76,17 @@ def key_val():
              count += 1
              print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
             else:
-              print(f"\nOops!! Wrong answer\nThe correct answer is {q["A"]}.\nYou have to quit with {total_money} INR.")
+              print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
               return
         #   next == input("\nYou want to play more ? : ")
         #   if next == "y":
         #      print("Here is hte next question")
            
     else:
-     print(f"\nOops!! Wrong answer\nThe correct answer is {q["A"]}.\nYou have to quit with {total_money} INR.")
+     print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
      return
         
 
 key_val()
+
 
