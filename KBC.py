@@ -2,7 +2,6 @@ import os
 import time
 
 def clear():
-    # Clears the screen for Windows or Mac/Linux
     os.system('cls' if os.name == 'nt' else 'clear')
 
 questions = [
@@ -41,8 +40,7 @@ questions = [
 def key_val():
     total_money = 0
     count = 1
-
-    # Show the Intro screen first
+    
     clear()
     print("\n" + "="*40)
     print("      Welcome to KBC      ")
@@ -51,9 +49,7 @@ def key_val():
     input("\nPress Enter to Start the Game...")
 
     for q in questions:
-        clear() # Wipes the screen for every new question
-        
-        # Header for each question
+        clear() 
         print("*" * 40)
         print(f" QUESTION {count} | PRIZE: INR {total_money} ")
         print("*" * 40)
@@ -74,7 +70,7 @@ def key_val():
             total_money += 1000
             count += 1
             print(f"\n!!Congratulations!! Your answer is correct and you won INR {total_money}!")
-            time.sleep(2) # Pause so they can read the success message
+            time.sleep(2) 
 
         elif ans == "Q":
             confirm = input(f"Are you sure want to quit? You have {total_money} INR till now\nPress \"Y\" to quit or \"N\" to continue : ").upper()
@@ -84,8 +80,7 @@ def key_val():
                 else:
                     print(f"Congratulation!! You won {total_money} INR.")
                 break 
-            # If they chose N, this loop will restart with the same question because we didn't increment count
-
+            
         elif ans == "H":
             print("\n💡 Hint : ", q["Hint"])
             make_sure = input("Your Answer Please : ").upper()
@@ -102,7 +97,6 @@ def key_val():
             print(f"\nOops!! Wrong answer\nThe correct answer is {q['A']}.\nYou have to quit with {total_money} INR.")
             return
 
-    # Final Win Message
     if count > len(questions):
         clear()
         print("\n" + "*"*40)
@@ -111,3 +105,4 @@ def key_val():
         print("*"*40)
 
 key_val()
+
