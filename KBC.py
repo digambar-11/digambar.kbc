@@ -50,14 +50,12 @@ def key_val():
            print("\n---This is the last question for 10000 INR---")
         
         print(f"\n{q["Q"]}")
-
         print(f"\n{q["O1"]}")
         print(q["O2"])
         print(q["O3"])
         print(q["O4"])
         
         ans = input("\nYour Answer(For Hint press \"H\"or to Quit press \"Q\") : ").upper()
-
         if ans == q["A"]:
           total_money += 1000
           count += 1
@@ -91,4 +89,5 @@ def key_val():
      print(f"\nOops!! Wrong answer\nThe correct answer is {q["A"]}.\nYou have to quit with {total_money} INR.")
      return
         
+
 key_val()
