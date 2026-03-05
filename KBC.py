@@ -49,11 +49,8 @@ def key_val():
         if count == len(questions):
            print("\n---This is the last question for 10000 INR---")
         
-        print(f"\n{q["Q"]}")
-        print(f"\n{q["O1"]}")
-        print(q["O2"])
-        print(q["O3"])
-        print(q["O4"])
+        print(f"\n{q['Q']}")
+        print("\n".join([q['O1'], q['O2'], q['O3'], q['O4']])) 
         
         ans = input("\nYour Answer(For Hint press \"H\"or to Quit press \"Q\") : ").upper()
         if ans == q["A"]:
@@ -91,3 +88,4 @@ def key_val():
         
 
 key_val()
+
