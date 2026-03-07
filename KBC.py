@@ -124,4 +124,6 @@ def key_val():
         print(f"      TOTAL PRIZE: INR {total_money}      ")
         print("*"*40)
 
-key_val()
+if __name__ == "__main__":
+  print(key_val())
+
