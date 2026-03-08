@@ -79,12 +79,8 @@ def key_val():
 
         count += 1
         
-        if count == 4:
-           print("\nYou are doing Great!!!")
-        if count == 6:
-           print("\nAwesome!!! You are so smart!")
-        if count == len(questions):
-           print("\n---This is the last question for 10000 INR---")
+        messages = {5 : "\nYou are doing Great!!!", 7 : "\nAwesome!!! You are so smart!", 11 : "\n---This is the last question for 10000 INR---"}
+        if count in messages: print(messages[count])
                 
         print(f"\n{q['Q']}")
         print("\n".join([q['O1'], q['O2'], q['O3'], q['O4']])) 
@@ -126,4 +122,3 @@ def key_val():
 
 if __name__ == "__main__":
   print(key_val())
-
