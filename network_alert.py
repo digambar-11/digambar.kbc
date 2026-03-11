@@ -2,41 +2,47 @@ import subprocess
 import platform
 import time
 import requests
+import ast
 import csv
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 # --- 1. CONFIGURATION ---
-# Telegram Details
 TELE_TOKEN = "8679608431:AAGxbwri7v7UaP0J1-ooFQMPU_k0B5cUZyQ"
 CHAT_ID = "5003052243"
-
-# File & Retention
 LOG_FILE = "downtime_log.csv"
+CONFIG_FILE = "devices.txt" 
 RETENTION_DAYS = 90
 
-# Monitoring List (Add all your NRC-1 switches here)
-SWITCHES = {
-    "172.25.0.60": "Access-SW-01",
-    # "172.25.0.61": "Access-SW-02",
-}
-
-# State Trackers
-last_state = {ip: True for ip in SWITCHES}
-down_time_start = {ip: 0 for ip in SWITCHES}
+last_state = {}
+down_time_start = {}
 
 # --- 2. CORE FUNCTIONS ---
+
+def load_device_dict():
+    if not os.path.exists(CONFIG_FILE):
+        raise FileNotFoundError(f"Configuration file {CONFIG_FILE} is missing!")
+    with open(CONFIG_FILE, 'r') as f:
+        data = f.read().strip()
+        return ast.literal_eval(data)
+
+def is_online(ip):
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
+    command = ['ping', param, '1', '-w', '1000', ip]
+    # Small timeout to keep the script moving
+    result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+    return "TTL=" in result.stdout
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
+    try: 
         requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(f"📡 Telegram Send Failed: {e}")
 
 def log_event(name, ip, event_type, duration="N/A"):
-    """Saves logs to CSV with DD-MM-YYYY formatting"""
     file_exists = os.path.isfile(LOG_FILE)
     with open(LOG_FILE, mode='a', newline='') as f:
         writer = csv.writer(f)
@@ -48,107 +54,83 @@ def log_event(name, ip, event_type, duration="N/A"):
             name, ip, event_type, duration
         ])
 
-def clean_old_logs():
-    """Maintains a rolling 90-day history"""
-    if not os.path.exists(LOG_FILE): return
-    cutoff = datetime.now() - timedelta(days=RETENTION_DAYS)
-    rows_to_keep = []
-    try:
-        with open(LOG_FILE, mode='r') as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames
-            for row in reader:
-                if datetime.strptime(row['Date'], '%d-%m-%Y') > cutoff:
-                    rows_to_keep.append(row)
-        with open(LOG_FILE, mode='w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
-            writer.writerows(rows_to_keep)
-        print(f"🧹 Cleanup: Keeping last {RETENTION_DAYS} days of logs.")
-    except Exception as e:
-        print(f"⚠️ Cleanup error: {e}")
+# --- 3. THE MONITOR ENGINE (Fixed: No internal infinite loop) ---
 
-def send_daily_summary():
-    """Generates the 8:00 AM Daily Morning Report from the CSV"""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%d-%m-%Y')
-    incidents = 0
-    downtime = 0.0
-    affected = set()
+def run_monitor_once():
+    """Runs one single scan of all devices and logs events."""
+    global last_state, down_time_start
+    
+    # Reload dictionary every scan to catch live updates to devices.txt
+    SWITCHES = load_device_dict()
+    ips = list(SWITCHES.keys())
+    
+    # Initialize trackers for any newly added IPs
+    for ip in ips:
+        if ip not in last_state:
+            last_state[ip] = True
+            down_time_start[ip] = 0
 
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, mode='r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['Date'] == yesterday and row['Event'] == 'RECOVERED':
-                    incidents += 1
-                    downtime += float(row['Duration (Mins)'])
-                    affected.add(row['Device Name'])
+    now = datetime.now()
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(is_online, ips))
 
-    if incidents == 0:
-        msg = f"☀️ <b>DAILY REPORT: {yesterday}</b>\n🟢 Perfect Uptime! All switches were stable."
-    else:
-        msg = f"☀️ <b>DAILY REPORT: {yesterday}</b>\n⚠️ Incidents: {incidents}\n⏳ Total Down: {round(downtime, 2)}m\n🏢 Affected: {', '.join(affected)}"
-    send_telegram(msg)
+    for i, ip in enumerate(ips):
+        current_status = results[i]
+        name = SWITCHES[ip]
+        
+        if last_state[ip] and not current_status: # Switch went Offline
+            down_time_start[ip] = time.time()
+            send_telegram(f"🚨 <b>OFFLINE:</b> {name}\n📍 IP: {ip}\n⏰ {now.strftime('%H:%M:%S')}")
+            log_event(name, ip, "OFFLINE")
+            last_state[ip] = False
+            
+        elif not last_state[ip] and current_status: # Switch Recovered
+            mins = round((time.time() - down_time_start[ip]) / 60, 2)
+            send_telegram(f"✅ <b>RECOVERED:</b> {name}\n📍 IP: {ip}\n⏳ Down for: {mins} mins")
+            log_event(name, ip, "RECOVERED", mins)
+            last_state[ip] = True
+    
+    print(f"✅ Check finished at {now.strftime('%H:%M:%S')}. Waiting 30s...")
 
-def is_last_day_of_month():
-    today = datetime.now()
-    return (today + timedelta(days=1)).month != today.month
-
-def is_online(ip):
-    """Checks device status via ICMP Ping"""
-    param = '-n' if platform.system().lower() == 'windows' else '-c'
-    # Wait time set to 1 second
-    command = ['ping', param, '1', '-w', '1000', ip]
-    try:
-        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        return result.returncode == 0
-    except: return False
-
-# --- 3. MAIN MONITORING LOOP ---
+# --- 4. THE UNIVERSAL WATCHDOG (The Brain) ---
 
 if __name__ == "__main__":
-    print(f"🚀 Python Alert System Active. Monitoring {len(SWITCHES)} devices.")
-    clean_old_logs() # Run cleanup on start
+    send_telegram("🖥️ <b>System Start:</b> Monitoring active at NRC-1.")
+    print("🖥️  Monitoring active. Checking devices...")
     
-    daily_sent = False
-    monthly_sent = False
+    error_active = False 
 
     while True:
-        now = datetime.now()
+        try:
+            # Check if we just recovered from a previous crash
+            if error_active:
+                send_telegram("✅ <b>RECOVERY:</b> Error resolved. Monitoring resumed.")
+                log_event("SYSTEM", "N/A", "SCRIPT_RECOVERED")
+                error_active = False 
 
-        # Morning Report at 08:00
-        if now.hour == 8 and now.minute == 0 and not daily_sent:
-            send_daily_summary()
-            daily_sent = True
-        
-        # Monthly Summary Alert on Last Day at 23:00
-        if is_last_day_of_month() and now.hour == 23 and not monthly_sent:
-            send_telegram(f"📊 <b>MONTHLY NOTICE:</b> Your 90-day downtime log is ready for review.")
-            monthly_sent = True
-
-        # Reset flags and run cleanup at midnight
-        if now.hour == 0 and now.minute == 0:
-            daily_sent = False
-            monthly_sent = False
-            clean_old_logs()
-
-        # Scan each switch in the list
-        for ip, name in SWITCHES.items():
-            current_status = is_online(ip)
+            # Run exactly one scan cycle
+            run_monitor_once()
             
-            # Change from ONLINE to OFFLINE
-            if last_state[ip] and not current_status:
-                down_time_start[ip] = time.time()
-                send_telegram(f"🚨 <b>OFFLINE:</b> {name}\n📍 IP: {ip}\n⏰ {now.strftime('%H:%M:%S')}")
-                log_event(name, ip, "OFFLINE")
-                last_state[ip] = False
+            # Wait between successful scans
+            time.sleep(30)
             
-            # Change from OFFLINE to ONLINE
-            elif not last_state[ip] and current_status:
-                mins = round((time.time() - down_time_start[ip]) / 60, 2)
-                send_telegram(f"✅ <b>RECOVERED:</b> {name}\n⏳ IP: {ip}\n⏰ Down for: {mins}\n⏰ {now.strftime('%H:%M:%S')}")
-                log_event(name, ip, "RECOVERED", mins)
-                last_state[ip] = True
-        
-        print(f"✅ Check finished at {now.strftime('%H:%M:%S')}. Waiting 30s...")
-        time.sleep(30)
+        except KeyboardInterrupt:
+            print("\n🛑 Stopped manually. Exiting...")
+            break
+
+        except Exception as e:
+            error_str = str(e)[:150]
+            if not error_active:
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                error_alert = (
+                    f"⚠️ <b>SCRIPT ERROR / CRASH</b>\n"
+                    f"⏰ Time: {timestamp}\n"
+                    f"❌ Error: {error_str}\n"
+                    f"🔄 <i>Status: Retrying in 60s...</i>"
+                )
+                send_telegram(error_alert)
+                log_event("SYSTEM", "N/A", f"SCRIPT_CRASH: {error_str}")
+                error_active = True
+            
+            print(f"⏳ Error persists: {error_str}. Retrying...")
+            time.sleep(60)
