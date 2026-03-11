@@ -37,7 +37,7 @@ def is_online(ip):
         return False
 
 if __name__ == "__main__":
-    print(f"🚀 Background Monitor Active. Checking {len(SWITCHES)} devices every 60s...")
+    print(f"🚀 Background Monitor Active. Checking {len(SWITCHES)} devices every 30s...")
     # No send_telegram() here, so it starts silently.
 
     while True:
@@ -59,5 +59,5 @@ if __name__ == "__main__":
                 last_state[ip] = True # Update state
         
         # Check the console to see the script is still alive
-        print(f"Check completed at {time.strftime('%H:%M:%S')}. Waiting 60s...")
-        time.sleep(60)
+        print(f"Check completed at {time.strftime('%H:%M:%S')}. Waiting 30s...")
+        time.sleep(30)
