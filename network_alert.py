@@ -30,7 +30,6 @@ def load_device_dict():
 def is_online(ip):
     param = '-n' if platform.system().lower() == 'windows' else '-c'
     command = ['ping', param, '1', '-w', '1000', ip]
-    # Small timeout to keep the script moving
     result = subprocess.run(command, capture_output=True, text=True, timeout=5)
     return "TTL=" in result.stdout
 
@@ -54,17 +53,14 @@ def log_event(name, ip, event_type, duration="N/A"):
             name, ip, event_type, duration
         ])
 
-# --- 3. THE MONITOR ENGINE (Fixed: No internal infinite loop) ---
+# --- 3. THE MONITOR ENGINE ---
 
 def run_monitor_once():
-    """Runs one single scan of all devices and logs events."""
     global last_state, down_time_start
     
-    # Reload dictionary every scan to catch live updates to devices.txt
     SWITCHES = load_device_dict()
     ips = list(SWITCHES.keys())
     
-    # Initialize trackers for any newly added IPs
     for ip in ips:
         if ip not in last_state:
             last_state[ip] = True
@@ -92,26 +88,55 @@ def run_monitor_once():
     
     print(f"✅ Check finished at {now.strftime('%H:%M:%S')}. Waiting 30s...")
 
-# --- 4. THE UNIVERSAL WATCHDOG (The Brain) ---
+# --- 4. THE UNIVERSAL WATCHDOG ---
 
 if __name__ == "__main__":
     send_telegram("🖥️ <b>System Start:</b> Monitoring active at NRC-1.")
-    print("🖥️  Monitoring active. Checking devices...")
+    print("🖥️  Monitoring active. Initializing state...")
     
+    try:
+        SWITCHES = load_device_dict()
+        ips = list(SWITCHES.keys())
+        
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = list(executor.map(is_online, ips))
+        
+        for i, ip in enumerate(ips):
+            status = results[i]
+            if status:
+                # Device is ONLINE: Set it to True so it stays silent
+                last_state[ip] = True
+                down_time_start[ip] = 0
+            else:
+                # Device is OFFLINE: Set it to True (FOOL the script)
+                # This makes the script think it was Online, so when the 
+                # first loop runs, it detects a "Change" to Offline and alerts you!
+                last_state[ip] = True 
+                down_time_start[ip] = time.time()
+                
+        print(f"✅ State initialized. Offline devices will alert in 30 seconds.")
+    except Exception as init_err:
+        print(f"⚠️ Initial scan error: {init_err}")
+
     error_active = False 
+    # ... rest of your code
 
     while True:
         try:
-            # Check if we just recovered from a previous crash
             if error_active:
                 send_telegram("✅ <b>RECOVERY:</b> Error resolved. Monitoring resumed.")
                 log_event("SYSTEM", "N/A", "SCRIPT_RECOVERED")
                 error_active = False 
 
-            # Run exactly one scan cycle
+            # Run the scan (Now it will only alert if a status CHANGES)
             run_monitor_once()
-            
-            # Wait between successful scans
+
+            # --- HEARTBEAT CHECK ---
+            now = datetime.now()
+            if now.hour == 8 and now.minute == 0 and now.second < 40:
+                send_telegram("☀️ <b>Daily Report:</b> NRC-1 Monitoring is active. All systems are being tracked.")
+                time.sleep(40) 
+
             time.sleep(30)
             
         except KeyboardInterrupt:
