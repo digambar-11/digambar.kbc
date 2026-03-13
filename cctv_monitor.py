@@ -32,6 +32,7 @@ RECOVERY_STABILITY = 1200  # 20 mins
 last_state = {}       
 pending_offline = {}  
 pending_recovery = {} 
+mail_sent_today = False  # Track if the 9 AM mail was sent
 
 # --- 2. CORE FUNCTIONS ---
 
@@ -43,12 +44,10 @@ def load_device_dict():
         return ast.literal_eval(f.read().strip())
 
 def save_active_incidents(incidents_dict):
-    """Saves a dictionary of {cam_name: work_order}"""
     with open(INCIDENT_FILE, 'w') as f:
         f.write(str(incidents_dict))
 
 def load_active_incidents():
-    """Loads the dictionary of active incidents"""
     if not os.path.exists(INCIDENT_FILE): return {}
     try:
         with open(INCIDENT_FILE, 'r') as f:
@@ -76,7 +75,6 @@ def get_telegram_reply(cam_name, prompt_type="Work Order"):
         resp = requests.get(url).json()
         if resp["result"]: last_id = resp["result"][-1]["update_id"]
     except: pass
-
     while True:
         try:
             resp = requests.get(url, params={"offset": last_id + 1}, timeout=10).json()
@@ -89,21 +87,16 @@ def get_telegram_reply(cam_name, prompt_type="Work Order"):
 def send_batch_dashboard_email(cam_list, status="OFFLINE"):
     devices = load_device_dict()
     total_count = len(devices)
-    
     current_active_incidents = load_active_incidents()
     offline_count = len(current_active_incidents)
     online_count = total_count - offline_count
 
-    # Always labeling the 4th column as Work Order / Status
     detail_label = "Work Order / Status"
-    status_color = "#dc3545" if status == "OFFLINE" else "#28a745"
-    subject = f"{'🚨' if status == 'OFFLINE' else '✅'} NRC-1 CCTV Report: {status}"
+    subject = f"{'🚨' if 'OFFLINE' in status else '✅'} NRC-1 CCTV Report: {status}"
 
     table_rows = ""
     for cam in cam_list:
-        # Check if individual camera is online or offline for color coding
         row_status_color = "#28a745" if "RECOVERED" in str(cam.get('detail', '')) else "#dc3545"
-        
         table_rows += f"""
         <tr>
             <td style="border: 1px solid #eee; padding: 10px;">{cam.get('asset', 'Site-Asset')}</td>
@@ -161,72 +154,80 @@ def send_batch_dashboard_email(cam_list, status="OFFLINE"):
 
 # --- 3. MONITORING & COMMANDS ---
 
-def check_for_commands():
-    url = f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates"
-    try:
-        resp = requests.get(url, params={"offset": -1}, timeout=5).json()
-        if resp["result"]:
-            text = resp["result"][-1].get("message", {}).get("text", "").strip().lower()
-            if text == "/mailit":
-                handle_mailit(hard=False)
-            elif text == "/hardmailit":
-                handle_mailit(hard=True)
-    except: pass
-
 def handle_mailit(hard=False):
     devices = load_device_dict()
-    active_incidents = load_active_incidents() # Dictionary {Name: WO}
-    
+    active_incidents = load_active_incidents()
     if not active_incidents:
-        send_telegram("ℹ️ No active incidents found to report.")
+        send_telegram("ℹ️ No morning (4AM-9AM) incidents found to report.")
         return
 
-    # 1. Check live status of all devices
     ips = list(devices.keys())
     with ThreadPoolExecutor(max_workers=20) as executor:
         online_results = list(executor.map(is_online, ips))
     
-    # Map status to camera names
     status_map = {devices[ip]['name']: online_results[i] for i, ip in enumerate(ips)}
     any_online = any(online_results)
     all_online = all(online_results)
 
-    # 2. THE GATEKEEPER LOGIC
     if not hard and not all_online:
         send_telegram("❌ Site not fully online. Use <b>/hardmailit</b> for a partial report.")
         return
-    
     if hard and not any_online:
-        send_telegram("⚠️ <b>Process Aborted:</b> At least one camera must be online to send a Hard Mail Report.")
+        send_telegram("⚠️ <b>Process Aborted:</b> Need at least one camera online.")
         return
 
-    # 3. START PROCESSING
     final_batch = []
     updated_incidents = active_incidents.copy()
-
-    # If it's a hardmailit but everyone is online, treat it as a clean recovery
     report_label = "SITE RECOVERY" if all_online else "PARTIAL RECOVERY"
-    send_telegram(f"📧 Generating {report_label}...")
 
     for cam_name, original_wo in active_incidents.items():
         cam_obj = next((c for c in devices.values() if c['name'] == cam_name), None)
         if not cam_obj: continue
-
         if status_map.get(cam_name):
-            # Camera is back online
             send_telegram(f"📝 Reason for <b>{cam_name}</b>?")
             reason = get_telegram_reply(cam_name, "Reason")
             cam_obj['detail'] = f"RECOVERED: {reason}"
             final_batch.append(cam_obj)
             del updated_incidents[cam_name] 
         else:
-            # Camera still offline (Only happens in /hardmailit)
             cam_obj['detail'] = f"PENDING (WO: {original_wo})"
             final_batch.append(cam_obj)
 
     send_batch_dashboard_email(final_batch, report_label)
     save_active_incidents(updated_incidents)
-    send_telegram(f"✅ {report_label} Sent. Incident list updated.")
+    send_telegram(f"✅ {report_label} Sent.")
+
+def check_for_commands_and_schedule():
+    global mail_sent_today
+    now = datetime.now()
+    
+    # 1. Telegram Commands
+    url = f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates"
+    try:
+        resp = requests.get(url, params={"offset": -1}, timeout=5).json()
+        if resp["result"]:
+            text = resp["result"][-1].get("message", {}).get("text", "").strip().lower()
+            if text == "/mailit": handle_mailit(hard=False)
+            elif text == "/hardmailit": handle_mailit(hard=True)
+    except: pass
+
+    # 2. 9:00 AM Daily Batch Email
+    if now.hour == 9 and now.minute == 0 and not mail_sent_today:
+        incidents = load_active_incidents()
+        if incidents:
+            devices = load_device_dict()
+            batch_to_mail = []
+            for name, wo in incidents.items():
+                cam = next((c for c in devices.values() if c['name'] == name), None)
+                if cam:
+                    cam['detail'] = wo
+                    batch_to_mail.append(cam)
+            send_batch_dashboard_email(batch_to_mail, "MORNING OFFLINE BATCH (4AM-9AM)")
+            send_telegram("📧 9:00 AM Morning Report Dispatched.")
+        mail_sent_today = True
+    
+    # Reset mail tracker at midnight
+    if now.hour == 0: mail_sent_today = False
 
 def run_monitor():
     global last_state, pending_offline, pending_recovery
@@ -234,11 +235,10 @@ def run_monitor():
     active_incidents = load_active_incidents()
     ips = list(devices.keys())
     now_ts = time.time()
+    current_hour = datetime.now().hour
     
     with ThreadPoolExecutor(max_workers=50) as executor:
         results = list(executor.map(is_online, ips))
-
-    batch_offline = []
 
     for i, ip in enumerate(ips):
         online = results[i]
@@ -248,41 +248,37 @@ def run_monitor():
 
         if not online:
             if ip in pending_recovery: del pending_recovery[ip]
-            # If cam is offline but not already in the "Incident List"
             if last_state[ip] and name not in active_incidents: 
                 if ip not in pending_offline:
                     pending_offline[ip] = now_ts
                 elif (now_ts - pending_offline[ip]) >= OFFLINE_THRESHOLD:
                     last_state[ip] = False
-                    batch_offline.append(cam)
                     del pending_offline[ip]
+                    
+                    # 24/7 Telegram Alert
+                    send_telegram(f"🚨 <b>{name}</b> OFFLINE.")
+                    
+                    # 4AM - 9AM ONLY: Capture for Email and Recovery Mail
+                    if 4 <= current_hour < 9:
+                        send_telegram(f"📥 Morning Window Detection! Type WO for <b>{name}</b>:")
+                        wo = get_telegram_reply(name, "Work Order")
+                        active_incidents[name] = wo
+                        save_active_incidents(active_incidents)
+                        send_telegram(f"✅ WO {wo} Saved. (Mail scheduled for 9AM)")
         else:
             if not last_state[ip]:
                 if ip not in pending_recovery:
                     pending_recovery[ip] = now_ts
                 elif (now_ts - pending_recovery[ip]) >= RECOVERY_STABILITY:
                     last_state[ip] = True
-                    send_telegram(f"✅ {name} is now STABLE. (Wait for /mailit)")
+                    send_telegram(f"✅ {name} STABLE. (Available for recovery if in morning list)")
                     del pending_recovery[ip]
             if ip in pending_offline: del pending_offline[ip]
 
-    if batch_offline:
-        send_telegram(f"🚨 {len(batch_offline)} CAMS DOWN. Provide Work Orders:")
-        for cam in batch_offline:
-            send_telegram(f"🔹 <b>{cam['name']}</b>\nType WO:")
-            wo = get_telegram_reply(cam['name'], "Work Order")
-            cam['detail'] = wo
-            active_incidents[cam['name']] = wo # Map Name to WO
-        
-        save_active_incidents(active_incidents)
-        send_batch_dashboard_email(batch_offline, "OFFLINE")
-        send_telegram("✅ Offline Report Sent.")
-
 if __name__ == "__main__":
-    print("\n🚀 NRC-1 DASHBOARD ONLINE (HARDMAILIT ENABLED)")
-    send_telegram("🚀 <b>NRC-1 MONITORING ONLINE</b>\nCommands: /mailit, /hardmailit")
-    
+    print("\n🚀 NRC-1 DASHBOARD: 4AM-9AM WINDOW ACTIVE")
+    send_telegram("🚀 <b>NRC-1 MONITORING ONLINE</b>\nReporting Window: 04:00 - 09:00 AM")
     while True:
         run_monitor()
-        check_for_commands()
+        check_for_commands_and_schedule()
         time.sleep(20)
