@@ -3,50 +3,64 @@ import csv
 import os
 
 DB_NAME = "cctv_manager.db"
-CSV_FILE = "cameras_list.csv" #your excel file 
+CSV_FILE = "cameras_list.csv"
 
-def import_from_csv():
+def smart_sync_import():
     if not os.path.exists(CSV_FILE):
-        print(f"❌ Error: {CSV_FILE} not found! Please place it in this folder.")
+        print(f"❌ Error: {CSV_FILE} not found!")
         return
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Ensure the table exists before importing
-    cursor.execute('''CREATE TABLE IF NOT EXISTS cameras (
-                        ip TEXT PRIMARY KEY, 
-                        name TEXT, 
-                        location TEXT, 
-                        status INTEGER DEFAULT 1, 
-                        last_change TEXT,
-                        is_pending INTEGER DEFAULT 0,
-                        work_order TEXT)''')
+    new_cams = 0
+    updated_cams = 0
 
-    count = 0
     try:
         with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
-            # Skip header if your Excel has one (e.g., "IP", "Name", "Loc")
-            next(reader, None) 
+            next(reader, None) # Skip Header
             
             for row in reader:
-                if len(row) < 3: continue # Skip empty or broken rows
-                
+                if len(row) < 3: continue
                 ip, name, loc = row[0].strip(), row[1].strip(), row[2].strip()
-                
-                # INSERT OR IGNORE: This prevents errors if an IP already exists
-                cursor.execute('''INSERT OR IGNORE INTO cameras (ip, name, location) 
-                                 VALUES (?, ?, ?)''', (ip, name, loc))
-                count += 1
+
+                # Check if this IP already exists in your database
+                cursor.execute("SELECT location FROM cameras WHERE ip = ?", (ip,))
+                existing_record = cursor.fetchone()
+
+                if existing_record:
+                    old_loc = existing_record[0]
+                    
+                    if old_loc != loc:
+                        # CONDITION: Location changed in Excel. 
+                        # We update data and RESET pending status to give it a fresh start.
+                        cursor.execute("""
+                            UPDATE cameras 
+                            SET name = ?, location = ?, is_pending = 0, work_order = NULL 
+                            WHERE ip = ?
+                        """, (name, loc, ip))
+                        updated_cams += 1
+                    else:
+                        # Just update the name if location is the same
+                        cursor.execute("UPDATE cameras SET name = ? WHERE ip = ?", (name, ip))
+                else:
+                    # New Camera found in Excel
+                    cursor.execute("""
+                        INSERT INTO cameras (ip, name, location, status, is_pending) 
+                        VALUES (?, ?, ?, 1, 0)
+                    """, (ip, name, loc))
+                    new_cams += 1
         
         conn.commit()
-        print(f"✅ SUCCESS: {count} cameras have been loaded into the database.")
+        print(f"✅ Sync Complete!")
+        print(f"   - {new_cams} New cameras added.")
+        print(f"   - {updated_cams} Locations/Names updated and reset.")
         
     except Exception as e:
-        print(f"⚠️ Error during import: {e}")
+        print(f"⚠️ Error: {e}")
     finally:
         conn.close()
 
 if __name__ == "__main__":
-    import_from_csv()
+    smart_sync_import()
