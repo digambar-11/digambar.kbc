@@ -2,7 +2,8 @@ import sqlite3
 import csv
 import os
 
-DB_NAME = "cctv_manager.db"
+# Ensure this matches your actual filename: cctv_monitoring.db or cctv_manager.db
+DB_NAME = "cctv_manager.db" 
 CSV_FILE = "cameras_list.csv"
 
 def smart_sync_import():
@@ -13,10 +14,21 @@ def smart_sync_import():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
+    # --- ADDED THIS: Ensures the database is ready for the data ---
+    cursor.execute('''CREATE TABLE IF NOT EXISTS cameras (
+                        ip TEXT PRIMARY KEY, 
+                        name TEXT, 
+                        location TEXT, 
+                        status INTEGER DEFAULT 1, 
+                        last_change TEXT,
+                        is_pending INTEGER DEFAULT 0,
+                        work_order TEXT)''')
+
     new_cams = 0
     updated_cams = 0
 
     try:
+        # utf-8-sig handles the "BOM" characters Excel often adds
         with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
             next(reader, None) # Skip Header
@@ -25,7 +37,6 @@ def smart_sync_import():
                 if len(row) < 3: continue
                 ip, name, loc = row[0].strip(), row[1].strip(), row[2].strip()
 
-                # Check if this IP already exists in your database
                 cursor.execute("SELECT location FROM cameras WHERE ip = ?", (ip,))
                 existing_record = cursor.fetchone()
 
@@ -33,8 +44,7 @@ def smart_sync_import():
                     old_loc = existing_record[0]
                     
                     if old_loc != loc:
-                        # CONDITION: Location changed in Excel. 
-                        # We update data and RESET pending status to give it a fresh start.
+                        # Location changed: Update info and RESET status flags
                         cursor.execute("""
                             UPDATE cameras 
                             SET name = ?, location = ?, is_pending = 0, work_order = NULL 
@@ -42,10 +52,10 @@ def smart_sync_import():
                         """, (name, loc, ip))
                         updated_cams += 1
                     else:
-                        # Just update the name if location is the same
+                        # Only name changed or stayed same: Update name only
                         cursor.execute("UPDATE cameras SET name = ? WHERE ip = ?", (name, ip))
                 else:
-                    # New Camera found in Excel
+                    # New IP: Add fresh record
                     cursor.execute("""
                         INSERT INTO cameras (ip, name, location, status, is_pending) 
                         VALUES (?, ?, ?, 1, 0)
