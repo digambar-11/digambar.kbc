@@ -749,13 +749,51 @@ def process_command(raw, src="GUI"):
     b = p[0].lower()
     v = p[1] if len(p) > 1 else None
 
-    if b == "/mute" and v:
-        query_db("UPDATE cameras SET maintenance_mode=1 WHERE ip=?", (v,), commit=True)
-        send_telegram(f"🔇 Muted {v}")
+    if b == "/mute":
+        if not v:
+            msg = "Usage: /mute <ip>"
+            update_gui_console(msg, "info")
+            send_telegram(msg)
+            return
 
-    elif b == "/unmute" and v:
-        query_db("UPDATE cameras SET maintenance_mode=0 WHERE ip=?", (v,), commit=True)
-        send_telegram(f"🔊 Unmuted {v}")
+        rows = query_db(
+            "SELECT name, ip, location FROM cameras WHERE ip=?",
+            (v,)
+        )
+        if not rows:
+            msg = f"❌ Cannot mute: camera with IP {v} not found."
+            update_gui_console(msg, "error")
+            send_telegram(msg)
+            return
+
+        name, ip, loc = rows[0]
+        query_db("UPDATE cameras SET maintenance_mode=1 WHERE ip=?", (ip,), commit=True)
+        detail = f"🔇 Muted {name} (IP: {ip}, Loc: {loc})"
+        update_gui_console(detail, "action")
+        send_telegram(detail)
+
+    elif b == "/unmute":
+        if not v:
+            msg = "Usage: /unmute <ip>"
+            update_gui_console(msg, "info")
+            send_telegram(msg)
+            return
+
+        rows = query_db(
+            "SELECT name, ip, location FROM cameras WHERE ip=?",
+            (v,)
+        )
+        if not rows:
+            msg = f"❌ Cannot unmute: camera with IP {v} not found."
+            update_gui_console(msg, "error")
+            send_telegram(msg)
+            return
+
+        name, ip, loc = rows[0]
+        query_db("UPDATE cameras SET maintenance_mode=0 WHERE ip=?", (ip,), commit=True)
+        detail = f"🔊 Unmuted {name} (IP: {ip}, Loc: {loc})"
+        update_gui_console(detail, "action")
+        send_telegram(detail)
 
     elif b == "/wo":
         # Case 1: there is an active WO prompt and user provided a number
@@ -793,7 +831,13 @@ def process_command(raw, src="GUI"):
             update_gui_console(msg, "info")
             send_telegram(msg)
 
-    elif b == "/comment" and v:
+    elif b == "/comment":
+        if not v:
+            msg = "Usage: /comment <text>"
+            update_gui_console(msg, "info")
+            send_telegram(msg)
+            return
+
         # 1) If a WO prompt group is open, comment on that group
         if ACTIVE_PROMPTS:
             ips = list(ACTIVE_PROMPTS.keys())[0].split(",")
@@ -803,8 +847,9 @@ def process_command(raw, src="GUI"):
                 (v, *ips),
                 commit=True
             )
-            update_gui_console(f"📝 Comment saved via {src}: {v}", "success")
-            send_telegram(f"📝 Comment saved: {v}")
+            msg = f"📝 Comment saved via {src}: {v}"
+            update_gui_console(msg, "success")
+            send_telegram(msg)
         else:
             # 2) No prompt: comment on next 4–9 incident without a comment
             rows = get_mail_window_incidents()
@@ -834,7 +879,9 @@ def process_command(raw, src="GUI"):
         off = query_db(
             "SELECT COUNT(*) FROM cameras WHERE status=0 AND maintenance_mode=0"
         )[0][0]
-        send_telegram(f"📊 Critical Offline: {off}")
+        msg = f"📊 Critical Offline: {off}"
+        update_gui_console(msg, "info")
+        send_telegram(msg)
 
 # ==============================================================================
 # STARTUP INCIDENT REPAIR
