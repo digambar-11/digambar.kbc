@@ -440,12 +440,15 @@ def run_monitor():
     full_ts = now.strftime('%Y-%m-%d %H:%M:%S')  # Timestamp for DB
     mail_win = (4 <= now.hour < 9)
     cur_offline_grp = []
-    on_cnt, off_cnt = 0, 0
+    on_cnt, off_cnt, muted_cnt = 0, 0, 0
 
     # 4. Process Results and Logic
     for i, (ip, name, old_stat, db_dt, is_el, loc,
             is_mut, wo, comment, incident_id) in enumerate(cams):
         new_stat = 1 if results[i] else 0
+
+        if is_mut == 1:
+            muted_cnt += 1
 
         # Count for status bar
         if new_stat == 1:
@@ -463,8 +466,10 @@ def run_monitor():
                 f"🔴 OFFLINE | Name: {name} | IP: {ip} | Time: {ts} | Loc: {loc} "
                 f"| IncidentID: {incident_id}"
             )
-            update_gui_console(detail_msg, "error")
+
+            # Alerts only if NOT muted
             if is_mut == 0:
+                update_gui_console(detail_msg, "error")
                 send_telegram(f"<b>{detail_msg}</b>")
 
             query_db(
@@ -475,7 +480,7 @@ def run_monitor():
             if ip in RECOVERY_TRACKER:
                 del RECOVERY_TRACKER[ip]
 
-            # Log OFFLINE event to CSV with incident_id
+            # Log OFFLINE event to CSV with incident_id (even if muted)
             log_to_csv(
                 "OFFLINE",
                 name,
@@ -491,9 +496,12 @@ def run_monitor():
         if new_stat == 1 and old_stat == 0:
             if ip not in RECOVERY_TRACKER:
                 detail_msg = f"🟢 RECOVERED | Name: {name} | IP: {ip} | Time: {ts} | Loc: {loc}"
-                update_gui_console(detail_msg, "success")
+
+                # Alerts only if NOT muted
                 if is_mut == 0:
+                    update_gui_console(detail_msg, "success")
                     send_telegram(f"<b>{detail_msg}</b>")
+
                 query_db(
                     "UPDATE cameras SET status=1, last_change=? WHERE ip=?",
                     (full_ts, ip),
@@ -514,7 +522,7 @@ def run_monitor():
                     except:
                         pass
 
-                # Log RECOVERED event to CSV with same incident_id
+                # Log RECOVERED event to CSV with same incident_id (even if muted)
                 log_to_csv(
                     "RECOVERED",
                     name,
@@ -542,7 +550,7 @@ def run_monitor():
                 cur_offline_grp.append(ip)
 
     # 5. Update UI Status Bar
-    update_status_bar(len(cams), on_cnt, off_cnt)
+    update_status_bar(len(cams), on_cnt, off_cnt, muted_cnt)
 
     # 6. Handle Work Order Prompts
     if cur_offline_grp:
@@ -586,13 +594,14 @@ def update_gui_console(text, tag="info"):
 
     root.after(0, _w)
 
-def update_status_bar(total, online, offline):
+def update_status_bar(total, online, offline, muted):
     root.after(
         0,
         lambda: [
             lbl_total.config(text=f"Total: {total}"),
             lbl_online.config(text=f"Online: {online}"),
-            lbl_offline.config(text=f"Critical Offline: {offline}")
+            lbl_offline.config(text=f"Critical Offline: {offline}"),
+            lbl_muted.config(text=f"Muted: {muted}")
         ]
     )
 
@@ -1205,9 +1214,12 @@ if __name__ == "__main__":
     lbl_total = tk.Label(s_f, text="Total: -", bg=HEADER_BG, fg=TEXT_MUTED, font=(FONT_FAMILY, 9))
     lbl_online = tk.Label(s_f, text="Online: -", bg=HEADER_BG, fg=ACCENT_GREEN, font=(FONT_FAMILY, 9))
     lbl_offline = tk.Label(s_f, text="Critical Offline: -", bg=HEADER_BG, fg=ACCENT_RED, font=(FONT_FAMILY, 9))
+    lbl_muted = tk.Label(s_f, text="Muted: -", bg=HEADER_BG, fg="#f97316", font=(FONT_FAMILY, 9))  # orange
+
     lbl_total.pack(side='left', padx=10, pady=4)
     lbl_online.pack(side='left', padx=10, pady=4)
     lbl_offline.pack(side='left', padx=10, pady=4)
+    lbl_muted.pack(side='left', padx=10, pady=4)
 
     threading.Thread(target=master_loop, daemon=True).start()
     threading.Thread(target=telegram_poller, daemon=True).start()
