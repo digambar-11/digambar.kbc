@@ -123,6 +123,53 @@ def query_db(query, params=(), commit=False):
         print(f"DB Error: {e}")
         return []
 
+def get_mail_window_incidents():
+    """All incidents from today's 4–9 AM window for /wo and /comment."""
+    return query_db(
+        """
+        SELECT ip, name, location, down_time, work_order, comment
+        FROM cameras
+        WHERE down_time IS NOT NULL
+          AND date(down_time) = date('now')
+          AND CAST(strftime('%H', down_time) AS INTEGER) BETWEEN 4 AND 8
+        ORDER BY down_time ASC
+        """,
+        ()
+    )
+
+def search_camera_gui():
+    """Open search results window by name or IP."""
+    try:
+        val = search_entry.get().strip()
+    except Exception:
+        return
+    if not val:
+        return
+    res = query_db(
+        "SELECT name, ip, location, status, work_order, down_time, maintenance_mode "
+        "FROM cameras WHERE name LIKE ? OR ip LIKE ?",
+        (f'%{val}%', f'%{val}%')
+    )
+    win = tk.Toplevel(root)
+    win.title(f"Search: {val}")
+    win.configure(bg=PRIMARY_BG)
+    win.geometry("580x380")
+    tk.Label(win, text=f"Search results for \"{val}\"", font=(FONT_FAMILY, 11, "bold"),
+            bg=PRIMARY_BG, fg=TEXT_PRIMARY, anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+    txt = st.ScrolledText(win, bg=CARD_BG, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY,
+                          font=("Consolas", 10), relief="flat", borderwidth=1)
+    txt.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+    if not res:
+        txt.insert(tk.END, "❌ No matching assets found.")
+    else:
+        for r in res:
+            stat = "🟢 ONLINE" if r[3] == 1 else "🔴 OFFLINE"
+            maint = " [MUTED]" if r[6] == 1 else ""
+            txt.insert(tk.END,
+                f"[{stat}]{maint} {r[0]}\nIP: {r[1]} | Loc: {r[2]}\n"
+                f"WO: {r[4] if r[4] else 'None'} | Down: {r[5]}\n{'-'*55}\n")
+    txt.config(state="disabled")
+
 def backup_database():
     try:
         if not os.path.exists("backups"):
@@ -507,9 +554,29 @@ def process_command(raw, src="GUI"):
         send_telegram(detail)
 
     elif b == "/wo":
-        msg = "Work order command processing"
-        update_gui_console(msg, "info")
-        send_telegram(msg)
+        if v and ACTIVE_PROMPTS:
+            ips = list(ACTIVE_PROMPTS.keys())[0].split(",")
+            finalize_wo(ips, v, "TELEGRAM" if src == "TELEGRAM" else src)
+        elif not v:
+            if ACTIVE_PROMPTS:
+                first_key = list(ACTIVE_PROMPTS.keys())[0]
+                win = ACTIVE_PROMPTS[first_key]
+                if win.winfo_exists():
+                    win.lift()
+                return
+            rows = get_mail_window_incidents()
+            pending = [r for r in rows if r[4] is None or r[4] == "" or r[4] == "NOT_PROVIDED"]
+            if not pending:
+                msg = "ℹ️ No 4–9 window cameras pending work order."
+                update_gui_console(msg, "info")
+                send_telegram(msg)
+            else:
+                ip, name, loc, down_time, _wo, _comment = pending[0]
+                open_dual_input_window([ip])
+        else:
+            msg = "ℹ️ No active WO prompt. Use /wo (no number) to pick next 4–9 camera."
+            update_gui_console(msg, "info")
+            send_telegram(msg)
 
     elif b == "/comment":
         if not v:
@@ -517,9 +584,26 @@ def process_command(raw, src="GUI"):
             update_gui_console(msg, "info")
             send_telegram(msg)
             return
-        msg = f"📝 Comment added: {v}"
-        update_gui_console(msg, "success")
-        send_telegram(msg)
+        if ACTIVE_PROMPTS:
+            ips = list(ACTIVE_PROMPTS.keys())[0].split(",")
+            ph = ",".join(["?"] * len(ips))
+            query_db(f"UPDATE cameras SET comment=? WHERE ip IN ({ph})", (v, *ips), commit=True)
+            msg = f"📝 Comment saved via {src}: {v}"
+            update_gui_console(msg, "success")
+            send_telegram(msg)
+        else:
+            rows = get_mail_window_incidents()
+            pending = [r for r in rows if r[5] is None or r[5] == ""]
+            if not pending:
+                msg = "ℹ️ No 4–9 window cameras pending comment."
+                update_gui_console(msg, "info")
+                send_telegram(msg)
+            else:
+                ip, name, loc, down_time, _wo, _comment = pending[0]
+                query_db("UPDATE cameras SET comment=? WHERE ip=?", (v, ip), commit=True)
+                msg = f"📝 Comment added to {name} (IP: {ip}, Loc: {loc}, Down: {down_time}): {v}"
+                update_gui_console(msg, "success")
+                send_telegram(msg)
 
     elif b == "/status":
         off = query_db(
@@ -663,42 +747,6 @@ def show_current_offline():
 
     refresh_current_offline_window()
 
-# ==============================================================================
-# MASTER LOOP
-# ==============================================================================
-def master_loop():
-    global REPORT_SENT_DATE
-    init_db()
-    close_stale_open_incidents_on_startup()
-    check_for_backlog()
-
-    # Startup warm-up sequence (total ≈ 20 seconds)
-    broadcast_system_state("🚦 NRC-1 CCTV Master Console starting. Warming up services...")
-    time.sleep(10)
-
-    broadcast_system_state("⚙️ System initializing core modules. Please wait...")
-    time.sleep(10)
-
-    # Final ONLINE announcement after warm-up
-    update_gui_console("🚀 NRC-1 CCTV Master Console started", "success")
-    send_telegram("🚀 <b>System ONLINE. Monitoring activated.</b>")
-
-    while True:
-        run_monitor()
-        now = datetime.now()
-
-        if now.hour == 9 and now.minute == 0 and REPORT_SENT_DATE != now.date():
-            for k in list(ACTIVE_PROMPTS.keys()):
-                finalize_wo(k.split(","), "NOT_PROVIDED", "SYSTEM")
-
-            send_daily_report()
-            backup_database()
-            cleanup_old_logs()
-
-            REPORT_SENT_DATE = now.date()
-
-        time.sleep(30)
-
 def graceful_shutdown():
     """
     Called when the GUI window is closed.
@@ -778,8 +826,8 @@ def run_monitor():
                 f"| IncidentID: {incident_id}"
             )
 
-            # Alerts only if NOT muted and NOT in WO input pause
-            if is_mut == 0 and not WO_INPUT_PAUSE:
+            # Alerts only if NOT muted (per-IP; WO window no longer blocks alerts)
+            if is_mut == 0:
                 update_gui_console(detail_msg, "error")
                 send_telegram(f"<b>{detail_msg}</b>")
 
@@ -808,8 +856,8 @@ def run_monitor():
             if ip not in RECOVERY_TRACKER:
                 detail_msg = f"🟢 RECOVERED | Name: {name} | IP: {ip} | Time: {ts} | Loc: {loc}"
 
-                # Alerts only if NOT muted and NOT in WO input pause
-                if is_mut == 0 and not WO_INPUT_PAUSE:
+                # Alerts only if NOT muted (per-IP)
+                if is_mut == 0:
                     update_gui_console(detail_msg, "success")
                     send_telegram(f"<b>{detail_msg}</b>")
 
@@ -870,7 +918,9 @@ def run_monitor():
 def master_loop():
     global REPORT_SENT_DATE, WO_INPUT_PAUSE
     init_db()
-    
+    close_stale_open_incidents_on_startup()
+    check_for_backlog()
+
     # Startup warm-up sequence (total ≈ 20 seconds)
     broadcast_system_state("🚦 NRC-1 CCTV Master Console starting. Warming up services...")
     time.sleep(10)
@@ -967,6 +1017,20 @@ def open_dual_input_window(ips):
     prompt = tk.Toplevel(root)
     prompt.title("Work Order Required")
     prompt.configure(bg=PRIMARY_BG)
+
+    # If user closes window with X (without submitting), resume alerts
+    def _on_wo_window_close():
+        global ACTIVE_PROMPTS, WO_INPUT_PAUSE
+        if ip_k in ACTIVE_PROMPTS:
+            ACTIVE_PROMPTS.pop(ip_k, None)
+        if not ACTIVE_PROMPTS:
+            WO_INPUT_PAUSE = False
+            update_gui_console("▶️ WO window closed. Alerts resumed.", "info")
+        try:
+            prompt.destroy()
+        except Exception:
+            pass
+    prompt.protocol("WM_DELETE_WINDOW", _on_wo_window_close)
 
     tk.Label(
         prompt,
@@ -1100,6 +1164,15 @@ if __name__ == "__main__":
         font=(FONT_FAMILY, 11), bg=PRIMARY_BG, fg=TEXT_MUTED
     ).pack(anchor="w")
 
+    # ----- Search row -----
+    search_f = tk.Frame(content, bg=PRIMARY_BG)
+    search_f.pack(fill="x", pady=(0, 12))
+    tk.Label(search_f, text="Search Camera:", font=(FONT_FAMILY, 10), bg=PRIMARY_BG, fg=TEXT_MUTED).pack(side="left", padx=(0, 8))
+    search_entry = tk.Entry(search_f, font=(FONT_FAMILY, 10), bg=CARD_BG, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY, relief="flat")
+    search_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    search_entry.bind("<Return>", lambda e: search_camera_gui())
+    tk.Button(search_f, text="Find", command=search_camera_gui, bg=ACCENT_BLUE, fg="white", activebackground="#1d4ed8", activeforeground="white", relief="flat", padx=10, pady=3).pack(side="left")
+
     # ----- KPI cards row -----
     kpi_f = tk.Frame(content, bg=PRIMARY_BG)
     kpi_f.pack(fill="x", pady=(0, 16))
@@ -1196,7 +1269,6 @@ if __name__ == "__main__":
 
     # ----- Startup -----
     root.protocol("WM_DELETE_WINDOW", graceful_shutdown)
-    init_db()
     update_gui_console("🚀 NRC-1 CCTV Master Console initializing…", "info")
     threading.Thread(target=master_loop, daemon=True).start()
     threading.Thread(target=telegram_poller, daemon=True).start()
