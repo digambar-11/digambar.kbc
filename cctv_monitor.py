@@ -1,10 +1,18 @@
 import subprocess, platform, time, requests, sqlite3, os, smtplib, threading, sys, csv, shutil, configparser
+import zipfile
+import json
+import uuid
+import traceback
 import tkinter as tk
 import tkinter.scrolledtext as st
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from concurrent.futures import ThreadPoolExecutor
+
+from nrc1_paths import get_paths, ensure_dirs
+from logging_setup import setup_logging
+from license_client import LicenseClient
 
 # ==============================================================================
 # VISUAL THEME CONFIG
@@ -25,13 +33,56 @@ FONT_FAMILY = "Segoe UI"
 # ==============================================================================
 # SECURITY CONFIGURATION
 # ==============================================================================
+APP_VERSION = "6.3-business-1"
+paths = get_paths("NRC1")
+ensure_dirs(paths)
+logger = setup_logging(paths.logs_dir, app_name="NRC1")
+
+def _excepthook(exc_type, exc, tb):
+    try:
+        logger.error("Uncaught exception", exc_info=(exc_type, exc, tb))
+    except Exception:
+        pass
+    try:
+        sys.__excepthook__(exc_type, exc, tb)
+    except Exception:
+        pass
+
+sys.excepthook = _excepthook
+
+# Backward-compat migration: if user has old local files, move them into %APPDATA%\NRC1\
+try:
+    if os.path.exists("config.ini") and not os.path.exists(paths.config_path):
+        shutil.copy2("config.ini", paths.config_path)
+    if os.path.exists("cctv_manager.db") and not os.path.exists(paths.db_path):
+        shutil.copy2("cctv_manager.db", paths.db_path)
+    if os.path.exists("downtime_report.csv") and not os.path.exists(paths.downtime_csv_path):
+        shutil.copy2("downtime_report.csv", paths.downtime_csv_path)
+except Exception:
+    pass
+
 config = configparser.ConfigParser()
-if not os.path.exists('config.ini'):
-    print("❌ ERROR: config.ini not found!")
-    sys.exit()
+if not os.path.exists(paths.config_path):
+    # Create a safe default config for first-run setup.
+    default_ini = """[SECRETS]
+TELE_TOKEN =
+EMAIL_PASSWORD =
+ADMIN_TELEGRAM_ID =
+GATEWAY_IP = 192.168.1.1
+
+[LICENSE]
+# Example: https://your-domain.com/api/license
+server_url =
+license_key =
+"""
+    try:
+        with open(paths.config_path, "w", encoding="utf-8") as f:
+            f.write(default_ini)
+    except Exception:
+        pass
 
 try:
-    config.read('config.ini')
+    config.read(paths.config_path)
     TELE_TOKEN = config['SECRETS']['TELE_TOKEN']
     EMAIL_PASSWORD = config['SECRETS']['EMAIL_PASSWORD']
     CHAT_ID_CCTV = config['SECRETS']['ADMIN_TELEGRAM_ID']
@@ -39,14 +90,160 @@ try:
     GATEWAY_IP = config.get('SECRETS', 'GATEWAY_IP', fallback='192.168.1.1')
 except KeyError as e:
     print(f"❌ ERROR: Missing key in config.ini: {e}")
+    print(f"   Config location: {paths.config_path}")
     sys.exit()
 
-DB_NAME = "cctv_manager.db"
-LOG_FILE = "downtime_report.csv"
+DB_NAME = paths.db_path
+LOG_FILE = paths.downtime_csv_path
 EMAIL_SENDER = "digambarkokitkar11@gmail.com"
 TO_EMAILS = ["digambarkokitkar11@gmail.com"]
 CC_EMAILS = ["kokitkardigamber11@gmail.com"]
 SMTP_SERVER, SMTP_PORT = "smtp.gmail.com", 587
+
+# License client (server URL is read from config.ini)
+LICENSE_SERVER_URL = config.get("LICENSE", "server_url", fallback="").strip()
+_license_client = LicenseClient(LICENSE_SERVER_URL, paths.license_cache_path, APP_VERSION)
+
+def show_license_dialog():
+    win = tk.Toplevel(root)
+    win.title("NRC-1 License Activation")
+    win.configure(bg=PRIMARY_BG)
+    win.geometry("520x230")
+    win.resizable(False, False)
+
+    tk.Label(win, text="License activation required", font=(FONT_FAMILY, 12, "bold"),
+             bg=PRIMARY_BG, fg=TEXT_PRIMARY, anchor="w").pack(fill="x", padx=16, pady=(16, 6))
+    tk.Label(win, text="Enter your license key to activate this installation.",
+             font=(FONT_FAMILY, 9), bg=PRIMARY_BG, fg=TEXT_MUTED, anchor="w").pack(fill="x", padx=16)
+
+    tk.Label(win, text="License Key:", font=(FONT_FAMILY, 9),
+             bg=PRIMARY_BG, fg=TEXT_MUTED, anchor="w").pack(fill="x", padx=16, pady=(14, 4))
+    key_var = tk.StringVar()
+    ent = tk.Entry(win, textvariable=key_var, bg=CARD_BG, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY,
+                   relief="flat", font=(FONT_FAMILY, 10))
+    ent.pack(fill="x", padx=16, ipady=6)
+    ent.focus_set()
+
+    msg_var = tk.StringVar(value="")
+    tk.Label(win, textvariable=msg_var, font=(FONT_FAMILY, 9),
+             bg=PRIMARY_BG, fg=ACCENT_ORANGE, anchor="w", wraplength=480).pack(fill="x", padx=16, pady=(10, 0))
+
+    btn_row = tk.Frame(win, bg=PRIMARY_BG)
+    btn_row.pack(fill="x", padx=16, pady=16)
+
+    def _activate():
+        k = key_var.get().strip()
+        if not k:
+            msg_var.set("Please enter a license key.")
+            return
+        msg_var.set("Activating…")
+        win.update_idletasks()
+
+        st = _license_client.activate(k)
+        if st.ok:
+            msg_var.set("Activation successful.")
+            update_gui_console("🔑 License activated successfully.", "success")
+            logger.info("License activated")
+            win.after(400, win.destroy)
+        else:
+            msg_var.set(st.message)
+            update_gui_console(f"🔑 License activation failed: {st.message}", "error")
+            logger.warning("License activation failed: %s", st.message)
+
+    def _close():
+        win.destroy()
+
+    tk.Button(btn_row, text="Activate", command=_activate, bg=ACCENT_BLUE, fg="white",
+              activebackground="#1d4ed8", relief="flat", padx=12, pady=6).pack(side="left")
+    tk.Button(btn_row, text="Close", command=_close, bg=BORDER_COLOR, fg=TEXT_PRIMARY,
+              activebackground=BORDER_COLOR, relief="flat", padx=12, pady=6).pack(side="left", padx=(10, 0))
+
+    win.grab_set()
+    win.transient(root)
+
+def require_valid_license_or_exit():
+    # If activated and valid cache, OK.
+    cached = _license_client.cached_status()
+    if cached.ok:
+        return True
+
+    # Try online validation if token exists.
+    if cached.token_present:
+        online = _license_client.validate_online()
+        if online.ok:
+            return True
+
+        # Grace period to avoid total lockout if server temporarily down.
+        if _license_client.allow_start_with_grace(grace_days=7):
+            update_gui_console("🔑 License server unreachable; starting in grace mode (7 days).", "info")
+            logger.warning("Starting in grace mode")
+            return True
+
+    # Not activated (or invalid): show activation dialog and block until closed.
+    show_license_dialog()
+    root.wait_window(root.winfo_children()[-1])
+    return _license_client.cached_status().ok
+
+def export_support_package():
+    """
+    Create a zip with logs + masked config + basic info.
+    Stored under %APPDATA%\\NRC1\\support\\ and path printed to the console widget.
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_zip = os.path.join(paths.support_dir, f"support_{ts}.zip")
+
+    def _masked_config_text():
+        try:
+            cp = configparser.ConfigParser()
+            cp.read(paths.config_path)
+            if cp.has_section("SECRETS"):
+                for k in ("TELE_TOKEN", "EMAIL_PASSWORD"):
+                    if cp.has_option("SECRETS", k):
+                        cp.set("SECRETS", k, "")
+            buf = []
+            for section in cp.sections():
+                buf.append(f"[{section}]")
+                for key, val in cp.items(section):
+                    buf.append(f"{key} = {val}")
+                buf.append("")
+            return "\n".join(buf).strip() + "\n"
+        except Exception:
+            return ""
+
+    try:
+        with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            # system info
+            sysinfo = {
+                "app_version": APP_VERSION,
+                "timestamp": datetime.now().isoformat(),
+                "platform": platform.platform(),
+                "python": sys.version.replace("\n", " "),
+                "appdata_dir": paths.app_data_dir,
+            }
+            z.writestr("system_info.json", json.dumps(sysinfo, indent=2))
+            z.writestr("config_masked.ini", _masked_config_text())
+
+            # logs
+            try:
+                for name in os.listdir(paths.logs_dir):
+                    p = os.path.join(paths.logs_dir, name)
+                    if os.path.isfile(p):
+                        z.write(p, arcname=f"logs/{name}")
+            except Exception:
+                pass
+
+            # optional license cache
+            try:
+                if os.path.exists(paths.license_cache_path):
+                    z.write(paths.license_cache_path, arcname="license.json")
+            except Exception:
+                pass
+
+        update_gui_console(f"🆘 Support package created: {out_zip}", "success")
+        logger.info("Support package created: %s", out_zip)
+    except Exception as e:
+        update_gui_console(f"⚠️ Support package failed: {e}", "error")
+        logger.error("Support package failed", exc_info=True)
 
 # Global State (single declaration)
 LAST_TELE_ID = 0
@@ -121,13 +318,13 @@ def query_db(query, params=(), commit=False):
 
 def backup_database():
     try:
-        if not os.path.exists("backups"):
-            os.makedirs("backups")
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        shutil.copy2(DB_NAME, f"backups/backup_{ts}.db")
+        shutil.copy2(DB_NAME, os.path.join(paths.backups_dir, f"backup_{ts}.db"))
         update_gui_console("💾 DB Backup created successfully.", "info")
+        logger.info("DB backup created")
     except Exception as e:
         update_gui_console(f"⚠️ Backup failed: {e}", "error")
+        logger.error("DB backup failed", exc_info=True)
 
 # ==============================================================================
 # INCIDENT QUERIES — FIXED
@@ -228,6 +425,28 @@ def _format_down_time(down_time_str):
         return dt.strftime("%d %b %Y, %H:%M")
     except:
         return down_time_str
+
+
+_EMAIL_THREAD_META = os.path.join(paths.support_dir, "email_thread.json")
+
+
+def _load_last_message_id():
+    try:
+        if os.path.exists(_EMAIL_THREAD_META):
+            with open(_EMAIL_THREAD_META, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+                return data.get("last_message_id")
+    except Exception:
+        return None
+    return None
+
+
+def _save_last_message_id(message_id: str):
+    try:
+        with open(_EMAIL_THREAD_META, "w", encoding="utf-8") as f:
+            json.dump({"last_message_id": message_id}, f, indent=2)
+    except Exception:
+        pass
 
 def send_daily_report():
     all_stats = query_db("SELECT status FROM cameras WHERE maintenance_mode = 0")
@@ -345,12 +564,23 @@ def send_daily_report():
         msg['To'] = ", ".join(TO_EMAILS)
         msg['Cc'] = ", ".join(CC_EMAILS)
         msg['Subject'] = f"📊 Daily CCTV Report - {datetime.now().strftime('%d %b %Y')}"
+
+        # Threading: reply to last successful report (if any)
+        last_id = _load_last_message_id()
+        new_id = f"<nrc1-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex}@nrc1.local>"
+        msg['Message-ID'] = new_id
+        if last_id:
+            msg['In-Reply-To'] = last_id
+            msg['References'] = last_id
+
         msg.attach(MIMEText(html, 'html'))
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.sendmail(EMAIL_SENDER, TO_EMAILS + CC_EMAILS, msg.as_string())
         server.quit()
+
+        _save_last_message_id(new_id)
         update_gui_console("✅ Daily report sent successfully.", "success")
     except Exception as e:
         error_msg = f"❌ Daily report FAILED: {str(e)}"
@@ -583,6 +813,63 @@ def show_current_offline():
                                            font=("Consolas", 10), relief="flat", borderwidth=1)
     OFFLINE_WINDOW_TEXT.pack(fill="both", expand=True, padx=10, pady=(0, 12))
     refresh_current_offline_window()
+
+
+def show_cameras_list(mode: str):
+    """
+    mode: 'online', 'offline', 'all'
+    Opens a window with list of cameras filtered by status.
+    """
+    if mode == "online":
+        title = "Online Cameras"
+        rows = query_db(
+            "SELECT name, ip, location, work_order, down_time FROM cameras "
+            "WHERE status=1 AND maintenance_mode=0"
+        )
+    elif mode == "offline":
+        title = "Offline Cameras"
+        rows = query_db(
+            "SELECT name, ip, location, work_order, down_time FROM cameras "
+            "WHERE status=0 AND maintenance_mode=0"
+        )
+    else:
+        title = "All Cameras"
+        rows = query_db(
+            "SELECT name, ip, location, status, work_order, down_time, maintenance_mode "
+            "FROM cameras"
+        )
+
+    win = tk.Toplevel(root)
+    win.title(title)
+    win.configure(bg=PRIMARY_BG)
+    win.geometry("620x420")
+    tk.Label(win, text=title, font=(FONT_FAMILY, 11, "bold"),
+             bg=PRIMARY_BG, fg=TEXT_PRIMARY, anchor="w").pack(fill="x", padx=14, pady=(12, 4))
+    txt = st.ScrolledText(win, bg=CARD_BG, fg=TEXT_PRIMARY, font=("Consolas", 10), relief="flat")
+    txt.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+
+    if not rows:
+        txt.insert(tk.END, "ℹ️ No cameras found for this view.")
+    else:
+        if mode == "all":
+            for name, ip, loc, status, wo, down_time, maint in rows:
+                stat = "🟢 ONLINE" if status == 1 else "🔴 OFFLINE"
+                maint_tag = " [MUTED]" if maint == 1 else ""
+                txt.insert(
+                    tk.END,
+                    f"[{stat}]{maint_tag} {name or ip}\n"
+                    f"IP: {ip} | Loc: {loc}\n"
+                    f"WO: {wo or 'None'} | Down: {down_time or 'N/A'}\n{'-'*55}\n",
+                )
+        else:
+            for name, ip, loc, wo, down_time in rows:
+                txt.insert(
+                    tk.END,
+                    f"{name or ip}\nIP: {ip} | Loc: {loc}\n"
+                    f"WO: {wo or 'None'} | Down: {down_time or 'N/A'}\n{'-'*55}\n",
+                )
+
+    txt.config(state="disabled")
 
 def search_camera_gui():
     try:
@@ -1094,6 +1381,11 @@ if __name__ == "__main__":
     lbl_offline= create_premium_card(kpi_f, "Critical Alerts",ACCENT_RED)
     lbl_muted  = create_premium_card(kpi_f, "Maintenance",    ACCENT_ORANGE)
 
+    # Clickable KPI labels to open detailed lists
+    lbl_total.bind("<Button-1>",   lambda e: show_cameras_list("all"))
+    lbl_online.bind("<Button-1>",  lambda e: show_cameras_list("online"))
+    lbl_offline.bind("<Button-1>", lambda e: show_cameras_list("offline"))
+
     # Main content row
     main_row = tk.Frame(content, bg=PRIMARY_BG)
     main_row.pack(fill="both", expand=True, pady=(0, 12))
@@ -1142,6 +1434,10 @@ if __name__ == "__main__":
               command=lambda: process_command("/wo", "GUI"), **btn_style).pack(fill="x", pady=4)
     tk.Button(actions_inner, text="📝 Add Comment (/comment)", bg=BORDER_COLOR, fg=TEXT_PRIMARY,
               command=lambda: process_command("/comment", "GUI"), **btn_style).pack(fill="x", pady=4)
+    tk.Button(actions_inner, text="🆘 Export Support Package", bg=BORDER_COLOR, fg=TEXT_PRIMARY,
+              command=export_support_package, **btn_style).pack(fill="x", pady=4)
+    tk.Button(actions_inner, text="🔑 License / Activate", bg=BORDER_COLOR, fg=TEXT_PRIMARY,
+              command=show_license_dialog, **btn_style).pack(fill="x", pady=4)
 
     tk.Label(right_col,
              text="Operator Note:\nWO popup: 04:00–09:00\n/wo & /comment: 09:00–04:00",
@@ -1151,8 +1447,13 @@ if __name__ == "__main__":
     root.protocol("WM_DELETE_WINDOW", graceful_shutdown)
     update_gui_console("🚀 NRC-1 CCTV Master Console initializing...", "info")
 
-    threading.Thread(target=master_loop, daemon=True).start()
-    threading.Thread(target=telegram_poller, daemon=True).start()
+    if not require_valid_license_or_exit():
+        update_gui_console("🔒 License activation required. Closing.", "error")
+        logger.error("License not valid; exiting")
+        root.after(600, root.destroy)
+    else:
+        threading.Thread(target=master_loop, daemon=True).start()
+        threading.Thread(target=telegram_poller, daemon=True).start()
 
     root.after(3000, check_input_queue)
     root.after(60000, auto_close_wo_prompts_at_9am)  # FIX: auto-close WO windows at 9 AM
